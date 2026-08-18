@@ -79,7 +79,9 @@ rebase drops out of the graph rather than staying there forever.
 
 **A run that fails loudly.** An expired token answers 401 on every project. A
 tool that skips failures would delete the refetched window, put nothing back,
-and report success while three weeks quietly vanished. This stops instead.
+and report success while three weeks quietly vanished. This stops instead, and
+so does a run where most projects failed to read, or one handed an empty
+token. Rate limits and server errors are retried before any of that.
 
 ## The first run
 
@@ -104,7 +106,7 @@ Expect a few minutes on the first pass, and seconds after that.
 | `since` | `2015-01-01` | Backfill start date |
 | `window` | `21` | Days to refresh on a normal run |
 | `weeks` | `53` | Columns to draw, up to 53 |
-| `steps` | `0,2,5,10` | Upper bound of each shade |
+| `steps` | `0,2,5,10` | Upper bound of each shade, four at most |
 | `label` | `{total} commits on GitLab in the last year` | Caption |
 | `commit` | `true` | Commit and push when the graph changes |
 | `commit-message` | `Update the GitLab heatmap` | |
@@ -138,8 +140,10 @@ with two dashes.
   it.
 - **Membership only.** It walks the projects you are a member of. A commit you
   authored in a repository you have since been removed from is invisible.
-- **Committer date, not author date.** A rebase moves a commit to the day it
-  was replayed. GitHub has the same behaviour.
+- **Committer date, in UTC.** A rebase moves a commit to the day it was
+  replayed, which is how GitHub behaves too. Days are bucketed in UTC rather
+  than the committer's own offset, so a commit written late in the evening in
+  California lands on the following square.
 - **One address per commit.** Co-authored trailers are not parsed.
 
 ## License

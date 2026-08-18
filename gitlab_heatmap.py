@@ -3,9 +3,8 @@
 
 Counts commits, not push events. GitLab's events API reports one event per
 push, so a push carrying ten commits shows as a single contribution, and the
-endpoint drops anything older than about three years. This reads
-/projects/:id/repository/commits instead, which counts every commit and keeps
-the whole history.
+endpoint prunes old events. This reads /projects/:id/repository/commits
+instead, which counts every commit and keeps the whole history.
 
 A full walk over every project is slow, so a run caches what it found and asks
 GitLab only for the recent window after that.
@@ -28,6 +27,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 
 DEFAULT_URL = "https://gitlab.com"
+MAX_SHADES = 4
 
 
 class Fatal(Exception):
@@ -38,11 +38,12 @@ class Fatal(Exception):
 
 
 def get(api, path, token, **params):
-    """One API read, retried on a timeout.
+    """One API read, retried on a timeout, a rate limit or a server error.
 
     A busy project answers slowly enough to time out on the first ask, and a
-    dropped page silently removes whole months from the history rather than
-    failing the run, so the retry here is what keeps the graph honest.
+    backfill over many projects is exactly the load that earns a 429. A
+    dropped page removes whole months from the history rather than failing the
+    run, so the retry here is what keeps the graph honest.
     """
     url = f"{api}/{path}?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"PRIVATE-TOKEN": token})
@@ -53,13 +54,16 @@ def get(api, path, token, **params):
                 return json.load(r)
         except urllib.error.HTTPError as e:
             # A bad or expired token answers 401 on every project. Skipping
-            # those would delete the refetched window from the cache and
-            # replace it with nothing, so the graph would lose three weeks
-            # and the run would still report success.
+            # those would delete the refetched window from the cache, put
+            # nothing back, and still report success.
             if e.code in (401, 403):
                 raise Fatal(f"GitLab returned {e.code}. Check the token and "
                             f"its read_api scope.")
-            raise  # 404 on an empty project is an answer, not a failure
+            if e.code != 429 and e.code < 500:
+                raise  # 404 on an empty project is an answer, not a failure
+            last = e
+            pause = e.headers.get("Retry-After") if e.headers else None
+            time.sleep(int(pause) if (pause or "").isdigit() else 2 ** attempt)
         except Exception as e:
             last = e
             time.sleep(2 ** attempt)
@@ -79,6 +83,21 @@ def identities(api, token, given):
              if me.get(k)}
     found.add(f"{me['id']}-{me['username']}@users.noreply.gitlab.com".lower())
     return found
+
+
+def utc_day(stamp):
+    """The UTC date a commit belongs to.
+
+    GitLab returns committed_date carrying the committer's own offset, so
+    slicing the first ten characters buckets by whatever timezone that person
+    sat in. The window prune works in UTC, so a commit written late in the
+    evening west of Greenwich would land in a day the prune never cleared and
+    count twice.
+    """
+    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).date().isoformat()
 
 
 def projects(api, token):
@@ -101,7 +120,7 @@ def commit_days(api, token, project_id, since, until, mine, seen):
     of magnitude and breaks paging over the duplicated set. `seen` carries
     commit ids across projects, so a fork or a mirror cannot double-count.
     """
-    days, page = Counter(), 1
+    days, page, added = Counter(), 1, []
     while True:
         try:
             batch = get(api, f"projects/{project_id}/repository/commits", token,
@@ -110,32 +129,39 @@ def commit_days(api, token, project_id, since, until, mine, seen):
             raise
         except Exception as e:
             # An empty or archived project answers 404. That is not a failure
-            # of the run, so record nothing and move on.
+            # of the run. A project that dies on page 7 of 20 is different:
+            # keeping those six pages would cache half a history as complete
+            # and never refetch it, so the partial read is thrown away.
+            for cid in added:
+                seen.discard(cid)
             print(f"  skipped {project_id}: {e}", file=sys.stderr)
-            return days, False
+            return Counter(), False
         if not batch:
             return days, True
         for c in batch:
             if c["id"] in seen:
                 continue
             seen.add(c["id"])
+            added.append(c["id"])
             if (c.get("author_email") or "").lower() in mine:
-                days[c["committed_date"][:10]] += 1
+                days[utc_day(c["committed_date"])] += 1
         page += 1
 
 
 def collect(api, token, since, until, mine):
     total, seen, ok, skipped = Counter(), set(), 0, 0
-    found_projects = projects(api, token)
-    for pid, name in found_projects:
+    found = projects(api, token)
+    for pid, name in found:
         days, clean = commit_days(api, token, pid, since, until, mine, seen)
         ok, skipped = (ok + 1, skipped) if clean else (ok, skipped + 1)
         if days:
             print(f"  {name}: {sum(days.values())} commits", file=sys.stderr)
         total.update(days)
-    if found_projects and not ok:
-        raise Fatal(f"every one of {skipped} projects failed to read. "
-                    f"Refusing to overwrite the cache with an empty result.")
+    # Whatever comes back replaces the cached copy of these days, so a run
+    # that read most of GitLab badly is worse than one that did not run.
+    if found and skipped > ok:
+        raise Fatal(f"{skipped} of {len(found)} projects failed to read. "
+                    f"Refusing to overwrite the cache with a partial result.")
     return total
 
 
@@ -148,22 +174,31 @@ def load_cache(path):
             return Counter(json.load(f))
     except FileNotFoundError:
         return Counter()
+    except (json.JSONDecodeError, ValueError) as e:
+        raise Fatal(f"the cache at {path} is not readable JSON ({e}). "
+                    f"Delete it and run once with --backfill.")
 
 
 def save_cache(path, counts):
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(path, "w") as f:
+    # A run cancelled halfway through this write would leave JSON that every
+    # later run refuses, so the file appears whole or not at all.
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(dict(sorted(counts.items())), f, indent=0, sort_keys=True)
         f.write("\n")
+    os.replace(tmp, path)
 
 
 # --- rendering ---------------------------------------------------------------
 
 CELL, GAP, RADIUS = 11, 3, 2
 TOP, LEFT = 20, 30
+MIN_WIDTH = 340
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+DAY_LABELS = ((1, "Mon"), (3, "Wed"), (5, "Fri"))
 
 
 def level(n, steps):
@@ -173,14 +208,21 @@ def level(n, steps):
     return len(steps)
 
 
+def grid_start(today, weeks):
+    """The Sunday the top-left cell sits on.
+
+    Row 0 is Sunday, as it is on GitHub, so the Mon/Wed/Fri labels line up
+    with rows 1, 3 and 5.
+    """
+    end = today + timedelta(days=(5 - today.weekday()) % 7)  # Saturday
+    return end - timedelta(weeks=weeks - 1, days=6)
+
+
 def render(counts, weeks, steps, label):
     today = date.today()
-    # GitHub's grid starts on a Sunday, so walk back to the Sunday that puts
-    # the current week in the last column.
-    end = today + timedelta(days=(6 - today.weekday()) % 7)
-    start = end - timedelta(weeks=weeks - 1, days=6)
+    start = grid_start(today, weeks)
 
-    width = LEFT + weeks * (CELL + GAP) + 10
+    width = max(LEFT + weeks * (CELL + GAP) + 10, MIN_WIDTH)
     height = TOP + 7 * (CELL + GAP) + 34
 
     cells, labels, seen_month = [], [], None
@@ -205,7 +247,7 @@ def render(counts, weeks, steps, label):
                 f'class="cap">{MONTHS[first.month - 1]}</text>'
             )
 
-    for d, name in ((1, "Mon"), (3, "Wed"), (5, "Fri")):
+    for d, name in DAY_LABELS:
         labels.append(
             f'<text x="0" y="{TOP + d * (CELL + GAP) + 9}" class="cap">{name}</text>'
         )
@@ -260,6 +302,29 @@ def csv(value):
     return [p for p in (value or "").replace("\n", ",").split(",") if p.strip()]
 
 
+def parse_steps(raw):
+    try:
+        steps = sorted({int(s) for s in csv(raw)})
+    except ValueError:
+        raise Fatal("--steps must be a comma-separated list of whole numbers")
+    if not steps:
+        raise Fatal("--steps needs at least one bound")
+    # The stylesheet carries five shades. A sixth would render with no fill
+    # rule at all, which paints the cell black in both themes.
+    if len(steps) > MAX_SHADES:
+        raise Fatal(f"--steps takes at most {MAX_SHADES} bounds, "
+                    f"one per shade above empty")
+    return steps
+
+
+def check_label(label, weeks):
+    try:
+        label.format(total=0, weeks=weeks)
+    except (KeyError, IndexError, ValueError) as e:
+        raise Fatal(f"--label holds a placeholder this tool cannot fill ({e}). "
+                    f"Only {{total}} and {{weeks}} are available.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--url", default=os.environ.get("GITLAB_URL", DEFAULT_URL),
@@ -281,36 +346,41 @@ def main():
                     help="caption, with {total} and {weeks} available")
     a = ap.parse_args()
 
-    if a.weeks < 1 or a.weeks > 53:
-        sys.exit("--weeks must be between 1 and 53")
     try:
-        steps = sorted(int(s) for s in csv(a.steps))
-    except ValueError:
-        sys.exit("--steps must be a comma-separated list of whole numbers")
-    if not steps:
-        sys.exit("--steps needs at least one bound")
+        run(a)
+    except Fatal as e:
+        sys.exit(f"stopping: {e}")
+
+
+def run(a):
+    if not 1 <= a.weeks <= 53:
+        raise Fatal("--weeks must be between 1 and 53")
+    if a.window < 1:
+        raise Fatal("--window must be at least one day")
+    steps = parse_steps(a.steps)
+    check_label(a.label, a.weeks)
 
     api = a.url.rstrip("/") + "/api/v4"
     token = os.environ.get("GITLAB_TOKEN")
     counts = load_cache(a.cache)
 
     if token:
-        try:
-            mine = identities(api, token, a.identity or csv(
-                os.environ.get("GITLAB_IDENTITIES")))
-            now = datetime.now(timezone.utc)
-            since = (f"{a.since}T00:00:00Z" if a.backfill
-                     else (now - timedelta(days=a.window)).strftime(
-                         "%Y-%m-%dT%H:%M:%SZ"))
-            print(f"counting commits by {', '.join(sorted(mine))} "
-                  f"since {since[:10]}", file=sys.stderr)
-            fresh = collect(api, token, since,
-                            now.strftime("%Y-%m-%dT%H:%M:%SZ"), mine)
-        except Fatal as e:
-            sys.exit(f"stopping: {e}")
-        # The refetched window is authoritative, so drop the cached copy of
-        # those days first. Otherwise a rebased or amended commit counts twice.
-        for day in [d for d in counts if d >= since[:10]]:
+        mine = identities(api, token,
+                          a.identity or csv(os.environ.get("GITLAB_IDENTITIES")))
+        now = datetime.now(timezone.utc)
+        # Midnight, not the current time of day. A window starting at 18:00
+        # would drop every commit made earlier on the boundary day, because
+        # the prune below removes the whole day and the fetch replaces only
+        # the evening of it.
+        first_day = (a.since if a.backfill
+                     else (now.date() - timedelta(days=a.window)).isoformat())
+        since = f"{first_day}T00:00:00Z"
+        print(f"counting commits by {', '.join(sorted(mine))} since {first_day}",
+              file=sys.stderr)
+        fresh = collect(api, token, since, now.strftime("%Y-%m-%dT%H:%M:%SZ"), mine)
+        # What comes back is authoritative for these days, so drop the cached
+        # copy first. Otherwise a rebased or amended commit counts twice.
+        for day in [d for d in counts if d >= first_day]:
             del counts[day]
         counts.update(fresh)
         save_cache(a.cache, counts)
@@ -320,8 +390,11 @@ def main():
         print("no GITLAB_TOKEN, drawing from the cache only", file=sys.stderr)
 
     if not counts:
-        sys.exit("nothing to draw: no cache and no token")
+        raise Fatal("nothing to draw: no cache and no token")
 
+    parent = os.path.dirname(a.out)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(a.out, "w") as f:
         f.write(render(counts, a.weeks, steps, a.label))
     print(f"wrote {a.out}", file=sys.stderr)

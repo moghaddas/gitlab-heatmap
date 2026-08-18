@@ -93,6 +93,14 @@ runs:
         HEATMAP_BACKFILL: ${{ inputs.backfill }}
       run: |
         set -euo pipefail
+        # GitHub does not enforce `required: true`, so an unset secret arrives
+        # as an empty string. The script would then draw from the cache and
+        # exit 0, and a stale graph would be committed every morning with
+        # nobody told the token had expired.
+        if [ -z "$GITLAB_TOKEN" ]; then
+          echo "::error::gitlab-token is empty. Check the secret exists."
+          exit 1
+        fi
         args=(--url "$GITLAB_URL" --out "$HEATMAP_OUT" --cache "$HEATMAP_CACHE"
               --since "$HEATMAP_SINCE" --window "$HEATMAP_WINDOW"
               --weeks "$HEATMAP_WEEKS" --steps "$HEATMAP_STEPS"
