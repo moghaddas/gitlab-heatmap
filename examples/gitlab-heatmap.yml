@@ -1,0 +1,28 @@
+name: GitLab heatmap
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Walk the whole history instead of the recent window"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gitlab-heatmap
+  cancel-in-progress: false
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: moghaddas/gitlab-heatmap@v1
+        with:
+          gitlab-token: ${{ secrets.GITLAB_READ_TOKEN }}
+          backfill: ${{ inputs.backfill }}

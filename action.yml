@@ -1,0 +1,124 @@
+name: "GitLab heatmap"
+description: "Draw your GitLab commit history as a GitHub-style contribution heatmap and commit the SVG."
+author: "Mo Moghaddas"
+
+branding:
+  icon: grid
+  color: orange
+
+inputs:
+  gitlab-token:
+    description: "GitLab personal access token with the read_api scope, and nothing else."
+    required: true
+  gitlab-url:
+    description: "Base URL of the GitLab instance."
+    required: false
+    default: "https://gitlab.com"
+  identities:
+    description: >
+      Comma-separated commit author addresses that count as you. Leave empty to
+      read them from the token owner.
+    required: false
+    default: ""
+  out:
+    description: "Path of the SVG to write."
+    required: false
+    default: "gitlab-heatmap.svg"
+  cache:
+    description: "Path of the JSON history kept between runs."
+    required: false
+    default: "data/gitlab-contributions.json"
+  backfill:
+    description: "Walk the whole history instead of the recent window."
+    required: false
+    default: "false"
+  since:
+    description: "Backfill start date."
+    required: false
+    default: "2015-01-01"
+  window:
+    description: "Days to refresh on a normal run."
+    required: false
+    default: "21"
+  weeks:
+    description: "Weeks to draw, up to 53."
+    required: false
+    default: "53"
+  steps:
+    description: "Upper bound of each shade, lightest first."
+    required: false
+    default: "0,2,5,10"
+  label:
+    description: "Caption under the grid. {total} and {weeks} are available."
+    required: false
+    default: "{total} commits on GitLab in the last year"
+  commit:
+    description: "Commit and push the result when it changes."
+    required: false
+    default: "true"
+  commit-message:
+    description: "Message for that commit."
+    required: false
+    default: "Update the GitLab heatmap"
+  commit-user-name:
+    description: "Author name for that commit."
+    required: false
+    default: "github-actions[bot]"
+  commit-user-email:
+    description: >
+      Author address for that commit. Use your own GitHub noreply address to
+      make these commits count on your own contribution graph.
+    required: false
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+
+runs:
+  using: composite
+  steps:
+    - name: Draw the heatmap
+      shell: bash
+      env:
+        # Every caller-supplied value arrives as an environment variable. A
+        # `${{ }}` expression is pasted into the script before bash parses it,
+        # so a caption holding a quote or a backtick would run as a command.
+        GITLAB_TOKEN: ${{ inputs.gitlab-token }}
+        GITLAB_IDENTITIES: ${{ inputs.identities }}
+        GITLAB_URL: ${{ inputs.gitlab-url }}
+        HEATMAP_OUT: ${{ inputs.out }}
+        HEATMAP_CACHE: ${{ inputs.cache }}
+        HEATMAP_SINCE: ${{ inputs.since }}
+        HEATMAP_WINDOW: ${{ inputs.window }}
+        HEATMAP_WEEKS: ${{ inputs.weeks }}
+        HEATMAP_STEPS: ${{ inputs.steps }}
+        HEATMAP_LABEL: ${{ inputs.label }}
+        HEATMAP_BACKFILL: ${{ inputs.backfill }}
+      run: |
+        set -euo pipefail
+        args=(--url "$GITLAB_URL" --out "$HEATMAP_OUT" --cache "$HEATMAP_CACHE"
+              --since "$HEATMAP_SINCE" --window "$HEATMAP_WINDOW"
+              --weeks "$HEATMAP_WEEKS" --steps "$HEATMAP_STEPS"
+              --label "$HEATMAP_LABEL")
+        [ "$HEATMAP_BACKFILL" = "true" ] && args+=(--backfill)
+        python3 "$GITHUB_ACTION_PATH/gitlab_heatmap.py" "${args[@]}"
+
+    - name: Commit the result
+      if: inputs.commit == 'true'
+      shell: bash
+      env:
+        HEATMAP_OUT: ${{ inputs.out }}
+        HEATMAP_CACHE: ${{ inputs.cache }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        COMMIT_USER_NAME: ${{ inputs.commit-user-name }}
+        COMMIT_USER_EMAIL: ${{ inputs.commit-user-email }}
+      run: |
+        set -euo pipefail
+        git config user.name  "$COMMIT_USER_NAME"
+        git config user.email "$COMMIT_USER_EMAIL"
+        git add -- "$HEATMAP_OUT" "$HEATMAP_CACHE"
+        # Nothing changes on a quiet day, and an empty commit every morning
+        # would bury the real history of the repository.
+        if git diff --cached --quiet; then
+          echo "No change today."
+          exit 0
+        fi
+        git commit -m "$COMMIT_MESSAGE"
+        git push
