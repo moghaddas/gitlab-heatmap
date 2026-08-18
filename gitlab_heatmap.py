@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Draw a GitHub-style contribution heatmap from GitLab commit history.
 
-Counts commits, not push events. GitLab's events API reports one event per
-push, so a push carrying ten commits shows as a single contribution, and the
-endpoint prunes old events. This reads /projects/:id/repository/commits
-instead, which counts every commit and keeps the whole history.
+Counts commits, not push events. The events API reports one row per push, so
+ten commits pushed together show as a single contribution, and old rows are
+pruned. This reads /projects/:id/repository/commits instead, which keeps every
+commit for as long as the repository exists.
 
 A full walk over every project is slow, so a run caches what it found and asks
 GitLab only for the recent window after that.
@@ -42,8 +42,8 @@ def get(api, path, token, **params):
 
     A busy project answers slowly enough to time out on the first ask, and a
     backfill over many projects is exactly the load that earns a 429. A
-    dropped page removes whole months from the history rather than failing the
-    run, so the retry here is what keeps the graph honest.
+    dropped page removes whole months from the history instead of failing the
+    run, so this retry keeps the graph honest.
     """
     url = f"{api}/{path}?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"PRIVATE-TOKEN": token})
@@ -88,11 +88,10 @@ def identities(api, token, given):
 def utc_day(stamp):
     """The UTC date a commit belongs to.
 
-    GitLab returns committed_date carrying the committer's own offset, so
-    slicing the first ten characters buckets by whatever timezone that person
-    sat in. The window prune works in UTC, so a commit written late in the
-    evening west of Greenwich would land in a day the prune never cleared and
-    count twice.
+    GitLab returns committed_date with the committer's own offset, so slicing
+    the first ten characters buckets by whatever timezone that person sat in.
+    The window prune works in UTC. A commit written late in the evening west of
+    Greenwich would land on a day the prune never clears, and count twice.
     """
     parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -115,10 +114,10 @@ def commit_days(api, token, project_id, since, until, mine, seen):
     """Days on which one of `mine` committed, and how many times.
 
     Reads the default branch only, which is what a contribution graph means
-    and what GitHub counts. Asking for `all=true` instead returns one copy of
-    a commit per branch that reaches it, which inflates a busy day by an order
-    of magnitude and breaks paging over the duplicated set. `seen` carries
-    commit ids across projects, so a fork or a mirror cannot double-count.
+    and what GitHub counts. `all=true` returns one copy of a commit per branch
+    that reaches it. That inflates a busy day by an order of magnitude and
+    breaks paging over the duplicated set. `seen` carries commit ids across
+    projects, so a fork or a mirror cannot double-count.
     """
     days, page, added = Counter(), 1, []
     while True:
@@ -131,7 +130,7 @@ def commit_days(api, token, project_id, since, until, mine, seen):
             # An empty or archived project answers 404. That is not a failure
             # of the run. A project that dies on page 7 of 20 is different:
             # keeping those six pages would cache half a history as complete
-            # and never refetch it, so the partial read is thrown away.
+            # and never refetch it, so this throws the partial read away.
             for cid in added:
                 seen.discard(cid)
             print(f"  skipped {project_id}: {e}", file=sys.stderr)

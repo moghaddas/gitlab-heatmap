@@ -66,8 +66,8 @@ inputs:
     default: "github-actions[bot]"
   commit-user-email:
     description: >
-      Author address for that commit. Use your own GitHub noreply address to
-      make these commits count on your own contribution graph.
+      Author address for that commit. Use your GitHub noreply address to make
+      these commits count on your own contribution graph.
     required: false
     default: "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -95,8 +95,8 @@ runs:
         set -euo pipefail
         # GitHub does not enforce `required: true`, so an unset secret arrives
         # as an empty string. The script would then draw from the cache and
-        # exit 0, and a stale graph would be committed every morning with
-        # nobody told the token had expired.
+        # exit 0, so a stale graph gets committed every morning and nobody
+        # learns the token expired.
         if [ -z "$GITLAB_TOKEN" ]; then
           echo "::error::gitlab-token is empty. Check the secret exists."
           exit 1

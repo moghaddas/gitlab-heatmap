@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks on the parts that have gone wrong in practice. No network, no deps.
+"""Checks the parts that break in practice. No network, no dependencies.
 
     python3 test_heatmap.py
 """
@@ -116,7 +116,7 @@ print("\nretries")
 h.urllib.request.urlopen = FakeUrlopen([http(500), http(502), http(503), http(429)])
 raises("a server error is retried, not skipped on the first try",
        lambda: h.get(API, "user", "t"), urllib.error.HTTPError)
-check("all four attempts were spent", h.urllib.request.urlopen.calls, 4)
+check("all four attempts are spent", h.urllib.request.urlopen.calls, 4)
 h.urllib.request.urlopen = FakeUrlopen([http(429, {"Retry-After": "0"})] * 4)
 raises("a rate limit is retried", lambda: h.get(API, "user", "t"),
        urllib.error.HTTPError)
@@ -162,7 +162,7 @@ raises("a fatal read stays fatal inside a project",
 print("\nthe partial-result guard")
 h.projects = lambda api, token: [(i, f"p/{i}") for i in range(4)]
 h.get = Fake(fail=http(404))
-raises("most projects failing refuses to overwrite the cache",
+raises("a mostly failed walk leaves the cache alone",
        lambda: h.collect("x", "t", "", "", mine), h.Fatal)
 h.projects = lambda api, token: []
 check("no projects at all is not an error",
