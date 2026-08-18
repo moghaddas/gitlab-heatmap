@@ -349,6 +349,10 @@ def main():
         run(a)
     except Fatal as e:
         sys.exit(f"stopping: {e}")
+    except urllib.error.HTTPError as e:
+        sys.exit(f"stopping: GitLab answered {e.code} for {e.url}")
+    except urllib.error.URLError as e:
+        sys.exit(f"stopping: cannot reach {a.url} ({e.reason})")
 
 
 def run(a):
