@@ -128,6 +128,15 @@ dishonest. It is off by default.
 The script is one file and imports only the standard library.
 
 ```
+pipx install gitlab-heatmap   # or: uvx gitlab-heatmap --backfill
+export GITLAB_TOKEN=glpat-...
+gitlab-heatmap --backfill
+gitlab-heatmap
+```
+
+From a checkout, run the file directly instead:
+
+```
 export GITLAB_TOKEN=glpat-...
 python3 gitlab_heatmap.py --backfill
 python3 gitlab_heatmap.py
