@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gitlab-heatmap"
+version = "0.1.0"
+description = "Draw a GitHub-style contribution heatmap from GitLab commit history"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Mo Moghaddas" }]
+requires-python = ">=3.8"
+keywords = ["gitlab", "github", "contribution-graph", "heatmap", "github-actions"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/moghaddas/gitlab-heatmap"
+Issues = "https://github.com/moghaddas/gitlab-heatmap/issues"
+
+[project.scripts]
+gitlab-heatmap = "gitlab_heatmap:main"
+
+# gitlab_heatmap.py stays at the repo root: action.yml runs it directly by
+# path with no install step, and test_heatmap.py imports it as a bare
+# top-level module. py-modules packages that same file in place, so there
+# is one copy of the code for both the Action and pipx/uvx installs.
+[tool.setuptools]
+py-modules = ["gitlab_heatmap"]
