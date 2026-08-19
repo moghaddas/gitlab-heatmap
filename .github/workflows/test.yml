@@ -10,3 +10,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: python3 test_heatmap.py
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the wheel and the sdist
+        run: uv build
+      - name: Install the wheel into a fresh virtual environment
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python dist/*.whl
+      - name: Run the console script
+        run: .venv/bin/gitlab-heatmap --help
