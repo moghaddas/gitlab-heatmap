@@ -150,11 +150,9 @@ def commit_days(api, token, project_id, since, until, mine, seen):
 def collect(api, token, since, until, mine):
     total, seen, ok, skipped = Counter(), set(), 0, 0
     found = projects(api, token)
-    for pid, name in found:
+    for pid, _ in found:
         days, clean = commit_days(api, token, pid, since, until, mine, seen)
         ok, skipped = (ok + 1, skipped) if clean else (ok, skipped + 1)
-        if days:
-            print(f"  {name}: {sum(days.values())} commits", file=sys.stderr)
         total.update(days)
     # Whatever comes back replaces the cached copy of these days, so a run
     # that read most of GitLab badly is worse than one that did not run.
@@ -378,7 +376,8 @@ def run(a):
         first_day = (a.since if a.backfill
                      else (now.date() - timedelta(days=a.window)).isoformat())
         since = f"{first_day}T00:00:00Z"
-        print(f"counting commits by {', '.join(sorted(mine))} since {first_day}",
+        # Names stay out of the log: an Actions log on a public repo is public.
+        print(f"counting commits by {len(mine)} identities since {first_day}",
               file=sys.stderr)
         fresh = collect(api, token, since, now.strftime("%Y-%m-%dT%H:%M:%SZ"), mine)
         # What comes back is authoritative for these days, so drop the cached
